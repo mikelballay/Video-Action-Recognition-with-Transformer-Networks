@@ -1,0 +1,133 @@
+import os
+import numpy as np
+import torch
+from torch import nn, optim
+from torch.utils.data import Dataset, DataLoader
+from transformers import BertModel, BertConfig
+from sklearn.metrics import accuracy_score, f1_score
+
+# Define the model class
+class VideoTransformer(nn.Module):
+    def __init__(self, embedding_dim, num_labels, max_seq_length):
+        super(VideoTransformer, self).__init__()
+        config = BertConfig(
+            hidden_size=embedding_dim,
+            num_attention_heads=8,
+            intermediate_size=embedding_dim * 4,
+            num_hidden_layers=4,
+            max_position_embeddings=max_seq_length,
+            type_vocab_size=1,
+            hidden_dropout_prob=0.1,
+            attention_probs_dropout_prob=0.1,
+        )
+        self.bert = BertModel(config)
+        self.classifier = nn.Linear(embedding_dim, num_labels)
+        self.position_embeddings = nn.Embedding(max_seq_length, embedding_dim)
+        self.register_buffer('position_ids', torch.arange(max_seq_length).expand((1, -1)))
+        
+    def forward(self, embeddings):
+        position_ids = self.position_ids[:, :embeddings.size(1)].to(embeddings.device)
+        position_embeddings = self.position_embeddings(position_ids)
+        embeddings = embeddings + position_embeddings
+        attention_mask = (embeddings.abs().sum(dim=-1) > 1e-4).long()
+        outputs = self.bert(inputs_embeds=embeddings, attention_mask=attention_mask)
+        cls_output = outputs.last_hidden_state[:, 0, :]
+        logits = self.classifier(cls_output)
+        return logits
+
+# Dataset class
+class PaddedVideoEmbeddingDataset(Dataset):
+    def __init__(self, root_dir, labels, max_seq_length=200, embedding_dim=1024):
+        self.npy_files = []
+        for label in os.listdir(root_dir):
+            class_dir = os.path.join(root_dir, label)
+            if os.path.isdir(class_dir):
+                files = [os.path.join(class_dir, f) for f in os.listdir(class_dir) if f.endswith('.npy')]
+                self.npy_files.extend(files)
+        self.labels = labels
+        self.max_seq_length = max_seq_length
+        self.embedding_dim = embedding_dim
+    
+    def __len__(self):
+        return len(self.npy_files)
+    
+    def __getitem__(self, idx):
+        embeddings = np.load(self.npy_files[idx])
+        embeddings = (embeddings - embeddings.mean(axis=0)) / (embeddings.std(axis=0) + 1e-8)
+        
+        # Pad or truncate to max_seq_length
+        if embeddings.shape[0] > self.max_seq_length:
+            embeddings = embeddings[:self.max_seq_length, :]
+        else:
+            padding = np.zeros((self.max_seq_length - embeddings.shape[0], self.embedding_dim))
+            embeddings = np.vstack((embeddings, padding))
+
+        file_path = self.npy_files[idx]
+        label_name = os.path.basename(os.path.dirname(file_path))
+        label = self.labels[label_name]
+        
+        return torch.tensor(embeddings, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+
+# Load label mappings
+labels_list = [name for name in os.listdir('/home/mikel.ballay/cap4773_mikel/try/DARPA/ecole/train/') if os.path.isdir(os.path.join('/home/mikel.ballay/cap4773_mikel/try/DARPA/ecole/train/', name))]
+label_to_index = {label: idx for idx, label in enumerate(sorted(labels_list))}
+num_labels = len(label_to_index)
+
+# Device configuration
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
+
+# Hyperparameters
+embedding_dim = 1024
+max_seq_length = 200
+learning_rate = 1e-4
+num_epochs = 15
+
+# Initialize model, optimizer, and loss function
+model = VideoTransformer(embedding_dim, num_labels, max_seq_length).to(device)
+optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+criterion = nn.CrossEntropyLoss()
+
+# Create the training dataset and dataloader
+train_root_dir = '/home/mikel.ballay/cap4773_mikel/try/DARPA_embeddings/train/'
+train_dataset = PaddedVideoEmbeddingDataset(
+    root_dir=train_root_dir,
+    labels=label_to_index,
+    max_seq_length=max_seq_length,
+    embedding_dim=embedding_dim
+)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+
+# Training loop
+best_accuracy = 0
+for epoch in range(num_epochs):
+    model.train()
+    total_loss = 0
+    correct_predictions = 0
+    total_samples = 0
+
+    for embeddings, labels in train_loader:
+        embeddings, labels = embeddings.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+        outputs = model(embeddings)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        _, preds = torch.max(outputs, dim=1)
+        correct_predictions += torch.sum(preds == labels).item()
+        total_samples += labels.size(0)
+
+    epoch_accuracy = correct_predictions / total_samples * 100
+    epoch_loss = total_loss / len(train_loader)
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.2f}%")
+
+    # Save the best model based on accuracy
+    if epoch_accuracy > best_accuracy:
+        best_accuracy = epoch_accuracy
+        torch.save(model.state_dict(), 'model.pth')
+        print(f"Model saved with accuracy: {best_accuracy:.2f}%")
+
+print("Training complete!")
