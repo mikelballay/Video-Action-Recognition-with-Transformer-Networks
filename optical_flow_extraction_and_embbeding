@@ -1,0 +1,98 @@
+import torch
+from torch import nn
+from pretrainedmodels import bninception
+from torchvision import transforms
+from glob import glob
+from PIL import Image
+from tqdm import tqdm
+from os.path import basename
+from argparse import ArgumentParser
+import numpy as np
+import sys
+import cv2
+import os
+
+output = '/home/mikel.ballay/cap4773_mikel/try/DARPA_embeddings/val/'
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+model = bninception(pretrained=None)
+model.conv1_7x7_s2 = nn.Conv2d(10, 64,kernel_size=(7,7), stride=(2,2), padding=(3,3))
+state_dict = torch.load('./TSN-flow.pth.tar')['state_dict']
+#state_dict = torch.load('/blue/jaime.ruiz/michaelperez012/ENKIx/src/TeSTra/TSN-flow-ek100.pth.tar')['state_dict']
+state_dict = {k.replace('module.base_model.','') : v for k,v in state_dict.items()}
+model.load_state_dict(state_dict, strict=False)
+
+model.last_linear = nn.Identity()
+model.global_pool = nn.AdaptiveAvgPool2d(1)
+
+model.to(device)
+
+transform = transforms.Compose([
+    transforms.Resize([256, 454]),
+    transforms.ToTensor(),
+    transforms.Lambda(lambda x: x*255),
+    transforms.Normalize(mean=[128],
+                         std=[1]),
+])
+
+video_name = sys.argv[1]
+label = sys.argv[2]
+
+flow_buffer = []
+model.eval()
+
+#get first frame
+#mp4_name = video_name + ".mp4"
+#path = os.path.join(recipe, mp4_name)
+
+cap = cv2.VideoCapture('/home/mikel.ballay/cap4773_mikel/try/DARPA/ecole/val/' + label + '/' + video_name + '.mp4')
+success, img = cap.read()
+
+flow_buffer = []
+#optical_flow = cv2.optflow.DualTVL1OpticalFlow_create()
+nvof = cv2.cuda_NvidiaOpticalFlow_1_0.create((640, 360), 5, False, False, False, 0)
+prev_flow = None
+i = 0
+while success:
+    last_img = img
+    success, img = cap.read()
+    if img is None: #break and exit program when video ends
+        break
+    
+    #calculate optical flow, get flow features, append to ndarray in memory
+    np_i1 = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    np_i2 = cv2.cvtColor(last_img, cv2.COLOR_RGB2GRAY)
+    flow, cost = nvof.calc(np_i1, np_i2, prev_flow) #get flow
+    flowUpSampled = nvof.upSampler(flow, (640, 360), nvof.getGridSize(), None)
+    #flowUpSampled_y = nvof.upSampler(flow[1], (360, 640), nvof.getGridSize(), None)
+
+    PIL_flow_x = Image.fromarray(np.uint8(flowUpSampled[:, :, 0]))
+    PIL_flow_y = Image.fromarray(np.uint8(flowUpSampled[:, :, 1]))
+    for _ in range(1 if len(flow_buffer)>0 else 5): #repeat the first five flows to predict at first frame
+        flow_buffer.append(transform(PIL_flow_x))
+        flow_buffer.append(transform(PIL_flow_y))
+    if len(flow_buffer)>10: #delete the oldest flow from buffer
+        del flow_buffer[0]
+        del flow_buffer[0]
+    if len(flow_buffer)==10: #get flow features using last 10 flows and append to ndarray in memory
+        data = torch.cat(flow_buffer[-10:],0).unsqueeze(0).to(device)
+        feat = model(data).squeeze().detach().cpu().numpy()
+        
+        if i == 0:
+            vid_feat = np.expand_dims(feat, axis=0)
+        else:
+            vid_feat = np.vstack([vid_feat, feat])
+        prev_flow = flow
+    i += 1
+    
+print(vid_feat.shape)
+        
+output_folder = output + label + "/"
+
+os.makedirs(output_folder, exist_ok = True)
+
+with open(output_folder + video_name + '.npy', 'wb') as f:
+    np.save(f, vid_feat)
+
+print("saved " + output + video_name + '.npy')
