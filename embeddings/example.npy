@@ -1,0 +1,16 @@
+# create_example_embeddings.py
+
+import numpy as np
+import os
+
+# Asegúrate de que la carpeta "embeddings/" exista
+os.makedirs("embeddings", exist_ok=True)
+
+# Crea datos de ejemplo: un array aleatorio de forma (15, 1024)
+# que simula un embedding de 15 fotogramas con 1024 dimensiones cada uno.
+dummy_embeddings = np.random.rand(15, 1024).astype(np.float32)
+
+# Guarda el array en "embeddings/example.npy"
+np.save("embeddings/example.npy", dummy_embeddings)
+
+print("Created embeddings/example.npy with shape", dummy_embeddings.shape)
