@@ -34,22 +34,23 @@ The code was developed and tested on a University of Florida virtual machine. So
 ---
 
 ## Repository Structure
+<pre>
 uf-action-recognition/
 ├── README.md
 ├── requirements.txt
 ├── docs/
-│ └── UF_paper.pdf
+│   └── UF_paper.pdf
 ├── data/
-│ └── example.npy
+│   └── example.npy
 ├── embeddings/
-│ └── example.npy
+│   └── example.npy
 ├── scripts/
-│ ├── 01_optical_flow_extraction.py
-│ ├── 02_training_transformer.py
-│ ├── 03_evaluation.py
-│ └── utils.py
+│   ├── 01_optical_flow_extraction.py
+│   ├── 02_training_transformer.py
+│   ├── 03_evaluation.py
+│   └── utils.py
 └── LICENSE
-
+</pre>
 
 - **`docs/UF_paper.pdf`**: Final research report, methodology, results, and conclusions.  
 - **`data/` & `embeddings/`**: Contain example `.npy` files so you can see the expected array shapes.  
